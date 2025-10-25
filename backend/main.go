@@ -1,11 +1,13 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
 
 	"golang.org/x/crypto/bcrypt"
+	_ "modernc.org/sqlite" // SQLite driver (pure Go)
 )
 
 type User struct {
@@ -13,15 +15,38 @@ type User struct {
 	Password string `json:"password"`
 }
 
-var users = make(map[string]string)
+var db *sql.DB
 
 func main() {
+	var err error
+	// Create or open SQLite database file
+	db, err = sql.Open("sqlite", "./users.db")
+	if err != nil {
+		log.Fatal("Failed to connect to database:", err)
+	}
+	defer db.Close()
+
+	// Create table if not exists
+	createTableQuery := `
+	CREATE TABLE IF NOT EXISTS users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		username TEXT UNIQUE NOT NULL,
+		password TEXT NOT NULL
+	);
+	`
+	_, err = db.Exec(createTableQuery)
+	if err != nil {
+		log.Fatal("Failed to create table:", err)
+	}
+
 	http.HandleFunc("/register", corsMiddleware(registerHandler))
 	http.HandleFunc("/login", corsMiddleware(loginHandler))
+
+	log.Println("Server running on http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
-// CORS middleware
+// === CORS Middleware ===
 func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
@@ -37,6 +62,7 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// === Register Handler ===
 func registerHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
@@ -44,14 +70,19 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var user User
-	err := json.NewDecoder(r.Body).Decode(&user)
-	if err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-	
-	// Check if user already exists
-	if _, exists := users[user.Username]; exists {
+
+	// Check if user exists
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE username = ?)", user.Username).Scan(&exists)
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	if exists {
 		http.Error(w, "User already exists", http.StatusConflict)
 		return
 	}
@@ -62,13 +93,18 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	users[user.Username] = string(hashedPassword)
-	
+	_, err = db.Exec("INSERT INTO users (username, password) VALUES (?, ?)", user.Username, string(hashedPassword))
+	if err != nil {
+		http.Error(w, "Failed to save user", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"message": "User registered successfully"})
 }
 
+// === Login Handler ===
 func loginHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
@@ -76,19 +112,26 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var user User
-	err := json.NewDecoder(r.Body).Decode(&user)
-	if err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	storedPassword, ok := users[user.Username]
-	if !ok || bcrypt.CompareHashAndPassword([]byte(storedPassword), []byte(user.Password)) != nil {
+	var storedHash string
+	err := db.QueryRow("SELECT password FROM users WHERE username = ?", user.Username).Scan(&storedHash)
+	if err == sql.ErrNoRows {
+		http.Error(w, "Invalid username or password", http.StatusUnauthorized)
+		return
+	} else if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	if bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(user.Password)) != nil {
 		http.Error(w, "Invalid username or password", http.StatusUnauthorized)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"message": "Login successful"})
 }
