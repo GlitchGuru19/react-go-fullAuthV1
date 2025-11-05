@@ -7,92 +7,66 @@ import {
 } from 'react-router-dom';
 
 // === AuthForm Component ===
-// This component handles both registration and login forms
 const AuthForm = ({ isRegister }: { isRegister: boolean }) => {
-  // Local state for form fields and messages
-  const [username, setUsername] = useState(''); // Stores username input
-  const [password, setPassword] = useState(''); // Stores password input
-  const [message, setMessage] = useState('');   // Stores success/error messages
-  const navigate = useNavigate();               // Hook from React Router to programmatically navigate
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [message, setMessage] = useState('');
+  const navigate = useNavigate();
 
-  // Function to handle form submission
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault(); // Prevent page reload on form submit
-    setMessage('');     // Reset previous messages
+    e.preventDefault();
+    setMessage('');
 
-    // Determine backend endpoint based on whether it's a registration or login form
-    const endpoint = isRegister ? '/register' : '/login';
-    const url = `http://localhost:8080${endpoint}`; // Backend URL
+    const endpoint = isRegister ? '/signup' : '/login';
+    const url = `http://localhost:8080${endpoint}`;
 
     try {
-      // Send POST request to backend with username and password
       const response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }, // JSON request
-        body: JSON.stringify({ username, password }),    // Convert data to JSON string
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
       });
 
-      // Parse JSON response from backend
       const data = await response.json();
 
-      // If login was successful and this is not the register form
-      if (response.ok && !isRegister) {
-        localStorage.setItem('username', username); // Save username in localStorage for persistence
-        navigate('/dashboard');                     // Navigate to dashboard page
+      if (response.ok) {
+        // Save tokens and username
+        localStorage.setItem('username', data.user.username);
+        localStorage.setItem('access_token', data.access_token);
+        localStorage.setItem('refresh_token', data.refresh_token);
+
+        navigate('/dashboard');
       }
 
-      // Set the message returned from backend (success or error)
-      setMessage(data.message);
+      setMessage(data.message || (isRegister ? 'Registered!' : 'Logged in!'));
     } catch (error) {
-      // Handle network errors or fetch failures
+      console.error(error);
       setMessage('Failed to connect to server.');
-      console.error('Fetch error:', error);
     }
   };
 
-  // Render form UI
   return (
-    <div
-      style={{
-        padding: '2rem',
-        maxWidth: '400px',
-        margin: 'auto',
-        border: '1px solid #ccc',
-        borderRadius: '8px',
-      }}
-    >
+    <div style={{ padding: '2rem', maxWidth: '400px', margin: 'auto', border: '1px solid #ccc', borderRadius: '8px' }}>
       <h2>{isRegister ? 'Register' : 'Login'}</h2>
-      <form
-        onSubmit={handleSubmit} // Attach submit handler
-        style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}
-      >
-        {/* Username input */}
+      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
         <input
           type="text"
           placeholder="Username"
           value={username}
-          onChange={(e) => setUsername(e.target.value)} // Update state on input change
+          onChange={(e) => setUsername(e.target.value)}
           required
         />
-        {/* Password input */}
         <input
           type="password"
           placeholder="Password"
           value={password}
-          onChange={(e) => setPassword(e.target.value)} // Update state on input change
+          onChange={(e) => setPassword(e.target.value)}
           required
         />
-        {/* Submit button */}
         <button type="submit">{isRegister ? 'Register' : 'Login'}</button>
       </form>
-      {/* Display message (success or error) */}
       {message && (
-        <p
-          style={{
-            marginTop: '1rem',
-            color: message.includes('successfully') ? 'green' : 'red', // Green for success, red for error
-          }}
-        >
+        <p style={{ marginTop: '1rem', color: message.toLowerCase().includes('success') ? 'green' : 'red' }}>
           {message}
         </p>
       )}
@@ -101,36 +75,70 @@ const AuthForm = ({ isRegister }: { isRegister: boolean }) => {
 };
 
 // === Dashboard Component ===
-// This component is shown after successful login
 const Dashboard = () => {
-  const navigate = useNavigate();              // Used to redirect users
-  const [username, setUsername] = useState<string | null>(null); // Stores the logged-in username
+  const navigate = useNavigate();
+  const [username, setUsername] = useState<string | null>(null);
+  const [message, setMessage] = useState('');
 
-  // useEffect runs after component mounts
-  useEffect(() => {
-    const storedUser = localStorage.getItem('username'); // Check if user is stored in localStorage
-    if (storedUser) {
-      setUsername(storedUser); // Set username state if found
-    } else {
-      navigate('/');           // If no user found, redirect to login page
+  const fetchProfile = async () => {
+    const accessToken = localStorage.getItem('access_token');
+    const refreshToken = localStorage.getItem('refresh_token');
+
+    if (!accessToken || !refreshToken) {
+      navigate('/');
+      return;
     }
-  }, [navigate]); // Dependency array ensures useEffect runs once after mount
 
-  // Function to log out user
-  const handleLogout = () => {
-    localStorage.removeItem('username'); // Remove username from localStorage
-    navigate('/');                        // Redirect to login page
+    try {
+      let response = await fetch('http://localhost:8080/profile', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+
+      // If access token expired, try refreshing
+      if (response.status === 401) {
+        const refreshResponse = await fetch('http://localhost:8080/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+
+        if (refreshResponse.ok) {
+          const data = await refreshResponse.json();
+          localStorage.setItem('access_token', data.access_token);
+
+          // Retry profile request
+          response = await fetch('http://localhost:8080/profile', {
+            headers: { Authorization: `Bearer ${data.access_token}` },
+          });
+        } else {
+          // Refresh failed, log out
+          handleLogout();
+          return;
+        }
+      }
+
+      const data = await response.json();
+      setUsername(data.message.replace('Welcome ', ''));
+    } catch (error) {
+      console.error(error);
+      setMessage('Failed to fetch profile.');
+    }
   };
 
-  // Render dashboard UI
+  useEffect(() => {
+    fetchProfile();
+    // eslint-disable-next-line
+  }, []);
+
+  const handleLogout = () => {
+    localStorage.removeItem('username');
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('refresh_token');
+    navigate('/');
+  };
+
   return (
-    <div
-      style={{
-        textAlign: 'center',
-        padding: '3rem',
-        fontFamily: 'sans-serif',
-      }}
-    >
+    <div style={{ textAlign: 'center', padding: '3rem', fontFamily: 'sans-serif' }}>
       <h1>🎉 You are now logged in!</h1>
       <p>
         Welcome, <strong>{username}</strong> 👋
@@ -138,21 +146,19 @@ const Dashboard = () => {
       <button onClick={handleLogout} style={{ marginTop: '1rem' }}>
         Log Out
       </button>
+      {message && <p style={{ color: 'red' }}>{message}</p>}
     </div>
   );
 };
 
 // === Home Page Component ===
-// Displays the login/register form with toggle
 const Home = () => {
-  const [isRegisterView, setIsRegisterView] = useState(false); // Toggle state between login and register
-  const navigate = useNavigate();                               // Used for redirecting if already logged in
+  const [isRegisterView, setIsRegisterView] = useState(false);
+  const navigate = useNavigate();
 
-  // Check if user is already logged in
   useEffect(() => {
-    const storedUser = localStorage.getItem('username');
-    if (storedUser) {
-      navigate('/dashboard'); // Automatically redirect logged-in user to dashboard
+    if (localStorage.getItem('username')) {
+      navigate('/dashboard');
     }
   }, [navigate]);
 
@@ -160,17 +166,12 @@ const Home = () => {
     <div style={{ textAlign: 'center', fontFamily: 'sans-serif' }}>
       <header>
         <h1>Go + React Auth</h1>
-        {/* Toggle button between login and register */}
         <button onClick={() => setIsRegisterView(!isRegisterView)}>
           Switch to {isRegisterView ? 'Login' : 'Register'}
         </button>
       </header>
       <main style={{ marginTop: '2rem' }}>
-        {isRegisterView ? (
-          <AuthForm isRegister={true} />
-        ) : (
-          <AuthForm isRegister={false} />
-        )}
+        <AuthForm isRegister={isRegisterView} />
       </main>
     </div>
   );
@@ -179,11 +180,10 @@ const Home = () => {
 // === Main App Component ===
 function App() {
   return (
-    // Router wraps all routes to enable navigation
     <Router>
       <Routes>
-        <Route path="/" element={<Home />} />            {/* Home page: login/register */}
-        <Route path="/dashboard" element={<Dashboard />} /> {/* Dashboard page */}
+        <Route path="/" element={<Home />} />
+        <Route path="/dashboard" element={<Dashboard />} />
       </Routes>
     </Router>
   );

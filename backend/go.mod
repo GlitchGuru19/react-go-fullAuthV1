@@ -1,10 +1,12 @@
-module fullAuth
+module github.com/GlitchGuru19/react-go-fullAuthV1
 
 go 1.24.0
 
 toolchain go1.24.9
 
 require (
+	github.com/golang-jwt/jwt/v4 v4.5.2
+	github.com/joho/godotenv v1.5.1
 	golang.org/x/crypto v0.43.0
 	modernc.org/sqlite v1.39.1
 )
